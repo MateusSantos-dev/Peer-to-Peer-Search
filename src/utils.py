@@ -11,8 +11,7 @@ def is_valid_ip(ip: str) -> bool:
 
 def is_valid_port(port: int) -> bool:
     """Verifica se uma porta é válida."""
-    return 0 <= port <= 65535
-
+    return 1 <= port <= 65535
 
 
 def get_lines_from_file(file_path: str) -> list[str]:
