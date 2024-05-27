@@ -8,11 +8,24 @@ from enum import Enum, auto
 
 
 class MessageType(Enum):
+    """Categorias de mensagens que podem ser enviadas."""
     HELLO = auto()
-    SEARCH = auto()
+    SEARCH_FLOODING = auto()
     SEARCH_RANDOM_WALK = auto()
     SEARCH_DEPTH_FIRST = auto()
     BYE = auto()
+
+
+class MenuOptions(Enum):
+    """Opções do menu de comandos disponíveis para o usuário."""
+    LISTAR_VIZINHOS = 0
+    HELLO = 1
+    SEARCH_FLOODING = 2
+    SEARCH_RANDOM_WALK = 3
+    SEARCH_DEPTH_FIRST = 4
+    ESTATISTICAS = 5
+    ALTERAR_TTL = 6
+    SAIR = 9
 
 
 class Node:
@@ -21,7 +34,7 @@ class Node:
             ip: str,
             port: int,
             neighbors: Optional[list[tuple[str, int]]],
-            key_values: Optional[dict[str, int]]
+            key_values: Optional[dict[str, str]]
     ) -> None:
         """Inicializa um novo nó da rede P2P."""
 
@@ -33,12 +46,20 @@ class Node:
 
         self.ip = ip
         self.port = port
-        self.sequence_number = 1  # numero de sequencia da mensagem
+        self.sequence_number = 1  # numero de sequência da mensagem
         self.socket = Node.create_socket(ip, port)
-        self.data = key_values
-        self.default_ttl = 100
 
+        print(f"Servidor criado: {ip}:{port}\n")
+
+        self.data = key_values
+
+        for key, value in self.data.items():
+            print(f"Adicionando ({key}, {value}) na tabela local")
+        print()
+
+        self.default_ttl = 100
         self.neighbors: dict[tuple[str, int], socket.socket] = self.connect_to_neighbors(neighbors)
+        self.last_seen_messages: dict[str, int] = {}  # Salva o último número de sequência recebido de cada vizinho
 
     @staticmethod
     def create_socket(ip: str, port: int) -> socket.socket:
@@ -78,11 +99,30 @@ class Node:
                     break
                 self.interpret_message(data.decode())
                 self.confirm_message(connection, data.decode())
+                self.mark_message_as_seen(data.decode())
         except ConnectionResetError:
             print("Connection reset")
+        except ConnectionAbortedError:
+            print("Connection aborted")
         finally:
             connection.close()
             print(f"Connection closed")
+
+    def mark_message_as_seen(self, message: str) -> None:
+        """Marca uma mensagem como vista."""
+
+        # Não marca mensagens de confirmação ou mensagens já vistas
+        if Node.message_is_confirmation(message) or message in self.last_seen_messages:
+            return
+
+        # Não marca mensagens enviadas pelo próprio nó
+        if message.split(" ")[0] == f"{self.ip}:{self.port}":
+            return
+
+        parts = message.split(" ")
+        origin = parts[0]
+        sequence_number = parts[1]
+        self.last_seen_messages[origin] = utils.convert_str_to_int(sequence_number)
 
     @staticmethod
     def confirm_message(connection: socket.socket, message: str) -> None:
@@ -104,15 +144,16 @@ class Node:
         """Interpreta uma mensagem recebida."""
 
         if Node.message_is_confirmation(message):
-            print(f'Mensagem de confirmação recebida: "{message}"')
+            print(f'    Mensagem de confirmação recebida: "{message}"')
             return
 
-        print(f'Mensagem recebida: "{message}"')
         parts = message.split(" ")
         origin = parts[0]
-        seqno = parts[1]
+        sequence_number = parts[1]
         ttl = parts[2]
         operacao = parts[3]
+
+        print(f'Mensagem recebida: "{message}"')
 
         if operacao == MessageType.HELLO.name:
             ip, port = utils.convert_str_to_ip_port(origin)
@@ -131,29 +172,47 @@ class Node:
 
     def send_hello(self, peer: socket.socket) -> None:
         """Envia uma mensagem HELLO para um vizinho."""
-        message = self.craft_message(MessageType.HELLO, None)
+        message = self.craft_message(MessageType.HELLO)
         self.send_message(peer, message)
 
     def send_bye(self, peer: socket.socket) -> None:
         """Envia uma mensagem BYE para um vizinho."""
-        message = self.craft_message(MessageType.BYE, None)
+        message = self.craft_message(MessageType.BYE)
         self.send_message(peer, message)
 
-    def craft_message(self, message_type: MessageType, current_ttl: Optional[int]):
+    def send_search_flooding(self, key: str) -> None:
+        """Envia uma mensagem de busca por flooding para todos os vizinhos."""
+        message = self.craft_message(MessageType.SEARCH_FLOODING, last_hop_port=self.port, key=key, hop_count=1)
+
+        for neighbor in self.neighbors.values():
+            self.send_message(neighbor, message)
+
+    def craft_message(self, message_type: MessageType, **kwargs):
         """Cria uma mensagem para ser enviada."""
         origin = f"{self.ip}:{self.port}"
-        seqno = self.sequence_number
+        sequence_number = self.sequence_number
         operacao = MessageType(message_type).name  # Converte o valor do Enum para o nome da operação
-        if current_ttl is None:
-            current_ttl = self.default_ttl
+
+        ttl = kwargs.get("ttl", None)
+
+        if ttl is None:
+            ttl = self.default_ttl
 
         if message_type == MessageType.HELLO:
-            current_ttl = 1
-            return f"{origin} {seqno} {current_ttl} {operacao}"
+            ttl = 1
+            return f"{origin} {sequence_number} {ttl} {operacao}"
 
         if message_type == MessageType.BYE:
-            current_ttl = 1
-            return f"{origin} {seqno} {current_ttl} {operacao}"
+            ttl = 1
+            return f"{origin} {sequence_number} {ttl} {operacao}"
+
+        if message_type == MessageType.SEARCH_FLOODING:
+            operacao = "SEARCH"
+            mode = "FL"
+            last_hop_port = kwargs.get("last_hop_port")
+            key = kwargs.get("key")
+            hop_count = kwargs.get("hop_count")
+            return f"{origin} {sequence_number} {ttl} {operacao} {mode} {last_hop_port} {key} {hop_count}"
 
     def connect_to_neighbors(self, neighbors: list[tuple[str, int]]):
         """Conecta-se aos vizinhos do nó."""
@@ -179,6 +238,7 @@ class Node:
             return
 
         print(f"Tentando conectar com {ip}:{port}")
+
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((ip, port))
@@ -194,9 +254,14 @@ class Node:
             print(f"Vizinho não está na tabela {ip}:{port}")
             return
 
+        # Fecha a conexão com o vizinho
         self.neighbors[(ip, port)].close()
         del self.neighbors[(ip, port)]
         print(f"Removendo vizinho da tabela {ip}:{port}")
+
+        # Remove o vizinho da lista de mensagens vistas
+        if f"{ip}:{port}" in self.last_seen_messages:
+            del self.last_seen_messages[f"{ip}:{port}"]
 
     def pick_neighbor(self):
         """Retorna o vizinho escolhido pelo usuário"""
@@ -214,48 +279,60 @@ class Node:
 
     def get_menu_option(self) -> None:
         """Pega opcao do menu escolhida pelo usuario."""
-        opcao = int(input(""))
-        if opcao not in [0, 1, 2, 3, 4, 5, 6, 9]:
+
+        option = int(input(""))
+
+        menu_options = [menu_option.value for menu_option in MenuOptions]
+        if option not in menu_options:
             print("Opção inválida")
             return self.get_menu_option()
 
-        if opcao == 0:
+        if option == MenuOptions.LISTAR_VIZINHOS.value:
             self.show_neighbors()
 
-        elif opcao == 1:
+        elif option == MenuOptions.HELLO.value:
             peer = self.pick_neighbor()
             if peer is not None:
                 self.send_hello(peer)
 
-        elif opcao == 6:
-            novo_ttl = int(input("Digite novo valor de TTL"))
+        elif option == MenuOptions.SEARCH_FLOODING.value:
+            key = input("Digite a chave a ser buscada\n")
+            if key in self.data:
+                print(f"Valor na tabela local")
+                print(f"    chave: {key} valor: {self.data[key]}")
+            else:
+                self.send_search_flooding(key)
+
+        elif option == MenuOptions.ALTERAR_TTL.value:
+            novo_ttl = int(input("Digite novo valor de TTL\n"))
             while novo_ttl < 1:
                 print("Valor de TTL inválido")
-                novo_ttl = int(input("Digite novo valor de TTL"))
+                novo_ttl = int(input("Digite novo valor de TTL\n"))
 
             self.default_ttl = novo_ttl
 
-        elif opcao == 9:
+        elif option == MenuOptions.SAIR.value:
             for peer in self.neighbors.values():
                 self.send_bye(peer)
 
     @staticmethod
     def show_menu() -> None:
         """Mostra o menu de comandos disponiveis para o usuario."""
-        print("""
-    Escolha o comando
-        [0] Listar vizinhos
-        [1] HELLO
-        [2] SEARCH (flooding)
-        [3] SEARCH (random walk)
-        [4] SEARCH (busca em profundidade)
-        [5] Estatisticas
-        [6] Alterar valor padrao de TTL
-        [9] Sair""")
+
+        print("""\nEscolha o comando
+    [0] Listar vizinhos
+    [1] HELLO
+    [2] SEARCH (flooding)
+    [3] SEARCH (random walk)
+    [4] SEARCH (busca em profundidade)
+    [5] Estatisticas
+    [6] Alterar valor padrao de TTL
+    [9] Sair"""
+              )
 
 
 def create_node() -> Node:
-    """Cria um novo nó da rede P2P usando os argumentos passados na inicialização do programa."""
+    """Cria um nó da rede P2P usando os argumentos passados na inicialização do programa."""
 
     # Se não houver argumentos suficientes, exibe uma mensagem de erro e encerra o programa
     if len(sys.argv) < 2:  # sys.argv[0] é o nome do arquivo
@@ -280,7 +357,8 @@ def create_node() -> Node:
 
 if __name__ == '__main__':
     node = create_node()
-    threading.Thread(target=node.receive_connections, args=(), daemon=True).start()
+    thread = threading.Thread(target=node.receive_connections, args=(), daemon=True)
+    thread.start()
     node.show_menu()
     while True:
         node.get_menu_option()
