@@ -37,13 +37,13 @@ def convert_str_to_ip_port(address: str) -> tuple[str, int]:
         raise ValueError(f"Argumento não segue o formato ip:porta: {address}")
 
 
-def get_key_value_from_file(file_path: str) -> dict[str, int]:
+def get_key_value_from_file(file_path: str) -> dict[str, str]:
     """Retorna um dicionario de chave-valor a partir de um arquivo."""
     lines = get_lines_from_file(file_path)
     data = {}
     for line in lines:
         key, value = line.split(" ")
-        data[key] = convert_str_to_int(value)
+        data[key] = value
     return data
 
 
