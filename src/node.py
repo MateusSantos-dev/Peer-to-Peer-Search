@@ -4,16 +4,15 @@ import utils
 import socket
 import threading
 from typing import Optional
-from enum import Enum
+from enum import Enum, auto
 
 
 class MessageType(Enum):
-    HELLO = 1
-    SEARCH = 2
-    SEARCH_RANDOM_WALK = 3
-    SEARCH_DEPTH_FIRST = 4
-    STATISTICS = 5
-    CHANGE_TTL = 6
+    HELLO = auto()
+    SEARCH = auto()
+    SEARCH_RANDOM_WALK = auto()
+    SEARCH_DEPTH_FIRST = auto()
+    BYE = auto()
 
 
 class Node:
@@ -37,6 +36,7 @@ class Node:
         self.sequence_number = 1  # numero de sequencia da mensagem
         self.socket = Node.create_socket(ip, port)
         self.data = key_values
+        self.default_ttl = 100
 
         self.neighbors: dict[tuple[str, int], socket.socket] = self.connect_to_neighbors(neighbors)
 
@@ -77,14 +77,36 @@ class Node:
                 if not data:
                     break
                 self.interpret_message(data.decode())
+                self.confirm_message(connection, data.decode())
         except ConnectionResetError:
             print("Connection reset")
         finally:
             connection.close()
             print(f"Connection closed")
 
+    @staticmethod
+    def confirm_message(connection: socket.socket, message: str) -> None:
+        """Confirma o recebimento de uma mensagem."""
+
+        # Não confirma mensagens de confirmação
+        if Node.message_is_confirmation(message):
+            return
+
+        operacao = message.split(" ")[3]
+        connection.sendall(f"{operacao}_OK".encode())
+
+    @staticmethod
+    def message_is_confirmation(message: str) -> bool:
+        """Verifica se uma mensagem é uma confirmação de recebimento."""
+        return message[-3:] == "_OK"
+
     def interpret_message(self, message: str) -> None:
         """Interpreta uma mensagem recebida."""
+
+        if Node.message_is_confirmation(message):
+            print(f'Mensagem de confirmação recebida: "{message}"')
+            return
+
         print(f'Mensagem recebida: "{message}"')
         parts = message.split(" ")
         origin = parts[0]
@@ -94,10 +116,44 @@ class Node:
 
         if operacao == MessageType.HELLO.name:
             ip, port = utils.convert_str_to_ip_port(origin)
-            if (ip, port) in self.neighbors:
-                print(f"Vizinho já está na tabela: {ip}:{port}")
-            else:
-                self.add_neighbor(ip, port)
+            self.add_neighbor(ip, port)
+
+        if operacao == MessageType.BYE.name:
+            ip, port = utils.convert_str_to_ip_port(origin)
+            self.delete_neighbor(ip, port)
+
+    def send_message(self, sock: socket.socket, message: str) -> None:
+        """Envia uma mensagem para um nó e."""
+        ip, port = sock.getpeername()
+        print(f'Encaminhando mensagem: "{message}" para {ip}:{port}')
+        sock.sendall(message.encode())
+        self.sequence_number += 1
+
+    def send_hello(self, peer: socket.socket) -> None:
+        """Envia uma mensagem HELLO para um vizinho."""
+        message = self.craft_message(MessageType.HELLO, None)
+        self.send_message(peer, message)
+
+    def send_bye(self, peer: socket.socket) -> None:
+        """Envia uma mensagem BYE para um vizinho."""
+        message = self.craft_message(MessageType.BYE, None)
+        self.send_message(peer, message)
+
+    def craft_message(self, message_type: MessageType, current_ttl: Optional[int]):
+        """Cria uma mensagem para ser enviada."""
+        origin = f"{self.ip}:{self.port}"
+        seqno = self.sequence_number
+        operacao = MessageType(message_type).name  # Converte o valor do Enum para o nome da operação
+        if current_ttl is None:
+            current_ttl = self.default_ttl
+
+        if message_type == MessageType.HELLO:
+            current_ttl = 1
+            return f"{origin} {seqno} {current_ttl} {operacao}"
+
+        if message_type == MessageType.BYE:
+            current_ttl = 1
+            return f"{origin} {seqno} {current_ttl} {operacao}"
 
     def connect_to_neighbors(self, neighbors: list[tuple[str, int]]):
         """Conecta-se aos vizinhos do nó."""
@@ -112,49 +168,90 @@ class Node:
                 all_neighbors[neighbor] = sock
                 threading.Thread(target=self.receive_message, args=(sock,), daemon=True).start()
             except ConnectionRefusedError:
-                print(f"Connection to {ip}:{port} refused")
+                print(f"    Erro ao conectar!")
         return all_neighbors
 
     def add_neighbor(self, ip: str, port: int) -> None:
         """Adiciona um vizinho ao nó."""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((ip, port))
-        self.neighbors[(ip, port)] = sock
-        print(f"    Adicionando vizinho na tabela: {ip}:{port}")
 
-    def send_message(self, sock: socket.socket, message: str) -> None:
-        """Envia uma mensagem para um nó."""
-        ip, port = sock.getpeername()
-        print(f'Encaminhando mensagem: "{message}" para {ip}:{port}')
-        sock.sendall(message.encode())
-        self.sequence_number += 1
+        if (ip, port) in self.neighbors:
+            print(f"Vizinho já está na tabela {ip}:{port}")
+            return
 
-    def send_hello(self, peer: socket.socket) -> None:
-        """Envia uma mensagem HELLO para um vizinho."""
-        message = self.craft_message(MessageType.HELLO, None)
-        self.send_message(peer, message)
+        print(f"Tentando conectar com {ip}:{port}")
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((ip, port))
+            self.neighbors[(ip, port)] = sock
+            print(f"    Adicionando vizinho na tabela: {ip}:{port}")
+            threading.Thread(target=self.receive_message, args=(sock,), daemon=True).start()
+        except ConnectionRefusedError:
+            print(f"    Erro ao conectar!")
 
-    def craft_message(self, message_type: MessageType, current_ttl: Optional[int]):
-        """Cria uma mensagem para ser enviada."""
-        origin = f"{self.ip}:{self.port}"
-        seqno = self.sequence_number
-        operacao = MessageType(message_type).name  # Converte o valor do Enum para o nome da operação
-        if current_ttl is None:
-            current_ttl = 100  # TTL padrão
+    def delete_neighbor(self, ip: str, port: int) -> None:
+        """Deleta um vizinho do nó."""
+        if (ip, port) not in self.neighbors:
+            print(f"Vizinho não está na tabela {ip}:{port}")
+            return
 
-        if message_type == MessageType.HELLO:
-            current_ttl = 1
-            return f"{origin} {seqno} {current_ttl} {operacao}"
+        self.neighbors[(ip, port)].close()
+        del self.neighbors[(ip, port)]
+        print(f"Removendo vizinho da tabela {ip}:{port}")
 
     def pick_neighbor(self):
         """Retorna o vizinho escolhido pelo usuário"""
         self.show_neighbors()
+
+        if len(self.neighbors) == 0:
+            return None
+
         neighbor_idx = int(input("\n"))
         if neighbor_idx < 0 or neighbor_idx >= len(self.neighbors):
             print("Vizinho inválido")
             return None
         neighbor_chosen_key = list(self.neighbors.keys())[neighbor_idx]
         return self.neighbors[neighbor_chosen_key]
+
+    def get_menu_option(self) -> None:
+        """Pega opcao do menu escolhida pelo usuario."""
+        opcao = int(input(""))
+        if opcao not in [0, 1, 2, 3, 4, 5, 6, 9]:
+            print("Opção inválida")
+            return self.get_menu_option()
+
+        if opcao == 0:
+            self.show_neighbors()
+
+        elif opcao == 1:
+            peer = self.pick_neighbor()
+            if peer is not None:
+                self.send_hello(peer)
+
+        elif opcao == 6:
+            novo_ttl = int(input("Digite novo valor de TTL"))
+            while novo_ttl < 1:
+                print("Valor de TTL inválido")
+                novo_ttl = int(input("Digite novo valor de TTL"))
+
+            self.default_ttl = novo_ttl
+
+        elif opcao == 9:
+            for peer in self.neighbors.values():
+                self.send_bye(peer)
+
+    @staticmethod
+    def show_menu() -> None:
+        """Mostra o menu de comandos disponiveis para o usuario."""
+        print("""
+    Escolha o comando
+        [0] Listar vizinhos
+        [1] HELLO
+        [2] SEARCH (flooding)
+        [3] SEARCH (random walk)
+        [4] SEARCH (busca em profundidade)
+        [5] Estatisticas
+        [6] Alterar valor padrao de TTL
+        [9] Sair""")
 
 
 def create_node() -> Node:
@@ -181,26 +278,9 @@ def create_node() -> Node:
     return Node(ip, port, neighbors, data)
 
 
-def show_menu() -> None:
-    """Mostra o menu de comandos disponiveis para o usuario."""
-    print("""
-Escolha o comando
-    [0] Listar vizinhos
-    [1] HELLO
-    [2] SEARCH (flooding)
-    [3] SEARCH (random walk)
-    [4] SEARCH (busca em profundidade)
-    [5] Estatisticas
-    [6] Alterar valor padrao de TTL
-    [9] Sair
-""")
-
-
 if __name__ == '__main__':
     node = create_node()
-    node.show_node()
     threading.Thread(target=node.receive_connections, args=(), daemon=True).start()
-    show_menu()
-    opcao = input("digite o numero\n")
-    node.send_hello(node.pick_neighbor())
-    input("sair\n")
+    node.show_menu()
+    while True:
+        node.get_menu_option()
