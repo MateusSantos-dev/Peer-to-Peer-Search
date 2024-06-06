@@ -4,7 +4,7 @@ def is_valid_ip(ip: str) -> bool:
     if len(parts) != 4:
         return False
     for part in parts:
-        if convert_str_to_int(part) < 0 or convert_str_to_int(part) > 255:
+        if int(part) < 0 or int(part) > 255:
             return False
     return True
 
@@ -20,19 +20,11 @@ def get_lines_from_file(file_path: str) -> list[str]:
         return file.read().splitlines()
 
 
-def convert_str_to_int(value: str) -> int:
-    """Converte um valor em string para inteiro."""
-    try:
-        return int(value)
-    except ValueError:
-        raise ValueError(f"Valor não é inteiro: {value}")
-
-
 def convert_str_to_ip_port(address: str) -> tuple[str, int]:
     """Converte uma string para um par (ip, porta)."""
     try:
         ip, port = address.split(":")
-        return ip, convert_str_to_int(port)
+        return ip, int(port)
     except ValueError:
         raise ValueError(f"Argumento não segue o formato ip:porta: {address}")
 
