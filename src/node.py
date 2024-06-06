@@ -1,4 +1,3 @@
-# Python 3.5 or higher is required
 import sys
 import utils
 import socket
@@ -9,6 +8,7 @@ from enum import Enum, auto
 
 class MessageType(Enum):
     """Categorias de mensagens que podem ser enviadas."""
+
     HELLO = auto()
     SEARCH_FLOODING = auto()
     SEARCH_RANDOM_WALK = auto()
@@ -18,6 +18,7 @@ class MessageType(Enum):
 
 class MenuOptions(Enum):
     """Opções do menu de comandos disponíveis para o usuário."""
+
     LISTAR_VIZINHOS = 0
     HELLO = 1
     SEARCH_FLOODING = 2
@@ -29,6 +30,8 @@ class MenuOptions(Enum):
 
 
 class Node:
+    """Representa um nó da rede P2P."""
+
     def __init__(
             self,
             ip: str,
@@ -84,10 +87,10 @@ class Node:
             print(f"    [{idx}] {ip}:{port}")
 
     def receive_connections(self) -> None:
-        """ Recebe conexões de outros nós e inicia uma thread para lidar com a conexão."""
+        """Recebe conexões de outros nós e inicia uma thread para lidar com a conexão."""
         self.socket.listen()
         while True:
-            connection, addr = self.socket.accept()
+            connection, _ = self.socket.accept()
             threading.Thread(target=self.receive_message, args=(connection,), daemon=True).start()
 
     def receive_message(self, connection: socket.socket):
@@ -106,13 +109,12 @@ class Node:
             print("Connection aborted")
         finally:
             connection.close()
-            print(f"Connection closed")
+            print("Connection closed")
 
     def mark_message_as_seen(self, message: str) -> None:
         """Marca uma mensagem como vista."""
-
         # Não marca mensagens de confirmação ou mensagens já vistas
-        if Node.message_is_confirmation(message) or message in self.last_seen_messages:
+        if Node.is_message_confirmation(message) or message in self.last_seen_messages:
             return
 
         # Não marca mensagens enviadas pelo próprio nó
@@ -127,23 +129,21 @@ class Node:
     @staticmethod
     def confirm_message(connection: socket.socket, message: str) -> None:
         """Confirma o recebimento de uma mensagem."""
-
         # Não confirma mensagens de confirmação
-        if Node.message_is_confirmation(message):
+        if Node.is_message_confirmation(message):
             return
 
         operacao = message.split(" ")[3]
         connection.sendall(f"{operacao}_OK".encode())
 
     @staticmethod
-    def message_is_confirmation(message: str) -> bool:
+    def is_message_confirmation(message: str) -> bool:
         """Verifica se uma mensagem é uma confirmação de recebimento."""
         return message[-3:] == "_OK"
 
     def interpret_message(self, message: str) -> None:
         """Interpreta uma mensagem recebida."""
-
-        if Node.message_is_confirmation(message):
+        if Node.is_message_confirmation(message):
             print(f'    Mensagem de confirmação recebida: "{message}"')
             return
 
@@ -182,7 +182,10 @@ class Node:
 
     def send_search_flooding(self, key: str) -> None:
         """Envia uma mensagem de busca por flooding para todos os vizinhos."""
-        message = self.craft_message(MessageType.SEARCH_FLOODING, last_hop_port=self.port, key=key, hop_count=1)
+        message = self.craft_message(
+            MessageType.SEARCH_FLOODING,
+            last_hop_port=self.port,
+            key=key, hop_count=1)
 
         for neighbor in self.neighbors.values():
             self.send_message(neighbor, message)
@@ -193,7 +196,7 @@ class Node:
         sequence_number = self.sequence_number
         operacao = MessageType(message_type).name  # Converte o valor do Enum para o nome da operação
 
-        ttl = kwargs.get("ttl", None)
+        ttl = kwargs.get("ttl")
 
         if ttl is None:
             ttl = self.default_ttl
@@ -214,6 +217,9 @@ class Node:
             hop_count = kwargs.get("hop_count")
             return f"{origin} {sequence_number} {ttl} {operacao} {mode} {last_hop_port} {key} {hop_count}"
 
+        else:
+            raise ValueError(f"Operação inválida: {message_type}")
+
     def connect_to_neighbors(self, neighbors: list[tuple[str, int]]):
         """Conecta-se aos vizinhos do nó."""
         all_neighbors = {}
@@ -227,12 +233,11 @@ class Node:
                 all_neighbors[neighbor] = sock
                 threading.Thread(target=self.receive_message, args=(sock,), daemon=True).start()
             except ConnectionRefusedError:
-                print(f"    Erro ao conectar!")
+                print("    Erro ao conectar!")
         return all_neighbors
 
     def add_neighbor(self, ip: str, port: int) -> None:
         """Adiciona um vizinho ao nó."""
-
         if (ip, port) in self.neighbors:
             print(f"Vizinho já está na tabela {ip}:{port}")
             return
@@ -246,7 +251,7 @@ class Node:
             print(f"    Adicionando vizinho na tabela: {ip}:{port}")
             threading.Thread(target=self.receive_message, args=(sock,), daemon=True).start()
         except ConnectionRefusedError:
-            print(f"    Erro ao conectar!")
+            print("    Erro ao conectar!")
 
     def delete_neighbor(self, ip: str, port: int) -> None:
         """Deleta um vizinho do nó."""
@@ -279,13 +284,14 @@ class Node:
 
     def get_menu_option(self) -> None:
         """Pega opcao do menu escolhida pelo usuario."""
-
-        option = int(input(""))
-
         menu_options = [menu_option.value for menu_option in MenuOptions]
-        if option not in menu_options:
-            print("Opção inválida")
-            return self.get_menu_option()
+        while True:
+            option = int(input(""))
+
+            if option not in menu_options:
+                print("Opção inválida")
+            else:
+                break
 
         if option == MenuOptions.LISTAR_VIZINHOS.value:
             self.show_neighbors()
@@ -298,7 +304,7 @@ class Node:
         elif option == MenuOptions.SEARCH_FLOODING.value:
             key = input("Digite a chave a ser buscada\n")
             if key in self.data:
-                print(f"Valor na tabela local")
+                print("Valor na tabela local")
                 print(f"    chave: {key} valor: {self.data[key]}")
             else:
                 self.send_search_flooding(key)
@@ -318,7 +324,6 @@ class Node:
     @staticmethod
     def show_menu() -> None:
         """Mostra o menu de comandos disponiveis para o usuario."""
-
         print("""\nEscolha o comando
     [0] Listar vizinhos
     [1] HELLO
@@ -333,10 +338,9 @@ class Node:
 
 def create_node() -> Node:
     """Cria um nó da rede P2P usando os argumentos passados na inicialização do programa."""
-
     # Se não houver argumentos suficientes, exibe uma mensagem de erro e encerra o programa
     if len(sys.argv) < 2:  # sys.argv[0] é o nome do arquivo
-        raise SystemExit(f"Esperado 1 argumento, recebido 0")
+        raise SystemExit("Esperado no mínimo 1 argumento, recebido 0")
 
     neighbors = None
     data = None
