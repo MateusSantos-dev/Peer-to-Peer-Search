@@ -13,6 +13,7 @@ class MessageType(Enum):
     SEARCH_FLOODING = auto()
     SEARCH_RANDOM_WALK = auto()
     SEARCH_DEPTH_FIRST = auto()
+    VALUE = auto()
     BYE = auto()
 
 
@@ -93,24 +94,6 @@ class Node:
             connection, _ = self.socket.accept()
             threading.Thread(target=self.receive_message, args=(connection,), daemon=True).start()
 
-    def receive_message(self, connection: socket.socket):
-        """Recebe mensagens de um nó conectado."""
-        try:
-            while True:
-                data = connection.recv(1024)
-                if not data:
-                    break
-                self.interpret_message(data.decode())
-                self.confirm_message(connection, data.decode())
-                self.mark_message_as_seen(data.decode())
-        except ConnectionResetError:
-            print("Connection reset")
-        except ConnectionAbortedError:
-            print("Connection aborted")
-        finally:
-            connection.close()
-            print("Connection closed")
-
     def mark_message_as_seen(self, message: str) -> None:
         """Marca uma mensagem como vista."""
         # Não marca mensagens de confirmação ou mensagens já vistas
@@ -124,7 +107,7 @@ class Node:
         parts = message.split(" ")
         origin = parts[0]
         sequence_number = parts[1]
-        self.last_seen_messages[origin] = utils.convert_str_to_int(sequence_number)
+        self.last_seen_messages[origin] = int(sequence_number)
 
     @staticmethod
     def confirm_message(connection: socket.socket, message: str) -> None:
@@ -141,7 +124,27 @@ class Node:
         """Verifica se uma mensagem é uma confirmação de recebimento."""
         return message[-3:] == "_OK"
 
-    def interpret_message(self, message: str) -> None:
+    def receive_message(self, connection: socket.socket):
+        """Recebe mensagens de um nó conectado."""
+        try:
+            while True:
+                data = connection.recv(1024)
+                if not data:
+                    break
+                message = data.decode()
+                self.interpret_message(message, sender_ip=connection.getpeername()[0])
+                if Node.is_message_confirmation(message) is False:
+                    self.confirm_message(connection, message)
+                    self.mark_message_as_seen(message)
+        except ConnectionResetError:
+            print("Connection reset")
+        except ConnectionAbortedError:
+            print("Connection aborted")
+        finally:
+            connection.close()
+            print("Connection closed")
+
+    def interpret_message(self, message: str, sender_ip: str) -> None:
         """Interpreta uma mensagem recebida."""
         if Node.is_message_confirmation(message):
             print(f'    Mensagem de confirmação recebida: "{message}"')
@@ -155,13 +158,105 @@ class Node:
 
         print(f'Mensagem recebida: "{message}"')
 
-        if operacao == MessageType.HELLO.name:
-            ip, port = utils.convert_str_to_ip_port(origin)
-            self.add_neighbor(ip, port)
+        if operacao == "HELLO":
+            self.handle_message_hello(message)
 
-        if operacao == MessageType.BYE.name:
+        elif operacao == "BYE":
+            self.handle_message_bye(message)
+
+        elif operacao == "SEARCH":
+            mode = parts[4]
+
+            if mode == "FL":
+                self.handle_message_flooding(message, sender_ip)
+
+        elif operacao == "VAL":
+            self.handle_value(message)
+
+        else:
+            raise ValueError(f"Operação inválida: {operacao}")
+
+    def handle_message_hello(self, message: str) -> None:
+        """Lida com uma mensagem HELLO."""
+        origin = message.split(" ")[0]
+        ip, port = utils.convert_str_to_ip_port(origin)
+        self.add_neighbor(ip, port)
+
+    def handle_message_bye(self, message: str) -> None:
+        """Lida com uma mensagem BYE."""
+        origin = message.split(" ")[0]
+        ip, port = utils.convert_str_to_ip_port(origin)
+        self.delete_neighbor(ip, port)
+
+    def handle_message_flooding(self, message: str, sender_ip: str) -> None:
+        """Lida com uma mensagem de busca por flooding."""
+
+        parts = message.split(" ")
+        origin = parts[0]
+        ttl = parts[2]
+        last_hop_port = parts[5]
+        key = parts[6]
+        hop_count = parts[7]
+
+        # Verifica se a mensagem já foi vista ou se eu mesmo enviei
+        if message in self.last_seen_messages or origin == f"{self.ip}:{self.port}":
+            print("Flooding: Mensagem repetida")
+            return
+
+        if key in self.data:
+            print("Chave encontrada")
             ip, port = utils.convert_str_to_ip_port(origin)
-            self.delete_neighbor(ip, port)
+            if (ip, port) in self.neighbors:
+                self.send_value(
+                    self.neighbors[(ip, port)],
+                    mode="FL",
+                    key=key,
+                    value=self.data[key],
+                    hop_count=hop_count)
+
+            else:
+                # Cria conexão temporária para enviar o valor
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((ip, port))
+                self.send_value(
+                    sock,
+                    mode="FL",
+                    key=key,
+                    value=self.data[key],
+                    hop_count=hop_count)
+                sock.close()
+            return
+
+        ttl = int(ttl) - 1
+        if ttl <= 0:
+            print("TTL igual a zero, descartando mensagem")
+            return
+
+        hop_count = int(hop_count) + 1
+        message = self.craft_message(MessageType.SEARCH_FLOODING,
+                                     origin=origin,
+                                     sequence_number=self.sequence_number,
+                                     ttl=ttl,
+                                     last_hop_port=self.port,
+                                     key=key,
+                                     hop_count=hop_count)
+
+        # enviar para vizinhos exceto o transmissor da mensagem
+        for (ip, port), neighbor in self.neighbors.items():
+            if (ip, port) != (sender_ip, int(last_hop_port)):
+                self.send_message(neighbor, message)
+
+    def handle_value(self, message: str) -> None:
+        """Lida com uma mensagem VALUE."""
+        parts = message.split(" ")
+        key = parts[5]
+        value = parts[6]
+
+        if key in self.data:
+            print("Chave já existe na tabela")
+            return
+
+        print(f"Valor encontrado! Chave: {key} Valor: {value}")
 
     def send_message(self, sock: socket.socket, message: str) -> None:
         """Envia uma mensagem para um nó e."""
@@ -180,8 +275,8 @@ class Node:
         message = self.craft_message(MessageType.BYE)
         self.send_message(peer, message)
 
-    def send_search_flooding(self, key: str) -> None:
-        """Envia uma mensagem de busca por flooding para todos os vizinhos."""
+    def start_search_flooding(self, key: str) -> None:
+        """Inicia uma busca por flooding."""
         message = self.craft_message(
             MessageType.SEARCH_FLOODING,
             last_hop_port=self.port,
@@ -190,16 +285,24 @@ class Node:
         for neighbor in self.neighbors.values():
             self.send_message(neighbor, message)
 
+    def send_value(self, peer: socket.socket, **kwargs) -> None:
+        """Envia um valor para um nó."""
+        mode = kwargs.get("mode")
+        key = kwargs.get("key")
+        value = kwargs.get("value")
+        hop_count = kwargs.get("hop_count")
+
+        message = self.craft_message(MessageType.VALUE, mode=mode, key=key, value=value, hop_count=hop_count)
+        self.send_message(peer, message)
+
     def craft_message(self, message_type: MessageType, **kwargs):
         """Cria uma mensagem para ser enviada."""
-        origin = f"{self.ip}:{self.port}"
-        sequence_number = self.sequence_number
+        # Caso esteja reenviando mensagem, pega o endereço de origem e o número de sequência da mensagem
+        origin = kwargs.get("origin", f"{self.ip}:{self.port}")
+        sequence_number = kwargs.get("sequence_number", self.sequence_number)
         operacao = MessageType(message_type).name  # Converte o valor do Enum para o nome da operação
 
-        ttl = kwargs.get("ttl")
-
-        if ttl is None:
-            ttl = self.default_ttl
+        ttl = kwargs.get("ttl", self.default_ttl)
 
         if message_type == MessageType.HELLO:
             ttl = 1
@@ -216,6 +319,14 @@ class Node:
             key = kwargs.get("key")
             hop_count = kwargs.get("hop_count")
             return f"{origin} {sequence_number} {ttl} {operacao} {mode} {last_hop_port} {key} {hop_count}"
+
+        if message_type == MessageType.VALUE:
+            operacao = "VAL"
+            mode = kwargs.get("mode")
+            key = kwargs.get("key")
+            value = kwargs.get("value")
+            hop_count = kwargs.get("hop_count")
+            return f"{origin} {sequence_number} {ttl} {operacao} {mode} {key} {value} {hop_count}"
 
         else:
             raise ValueError(f"Operação inválida: {message_type}")
@@ -277,7 +388,6 @@ class Node:
 
         neighbor_idx = int(input("\n"))
         if neighbor_idx < 0 or neighbor_idx >= len(self.neighbors):
-            print("Vizinho inválido")
             return None
         neighbor_chosen_key = list(self.neighbors.keys())[neighbor_idx]
         return self.neighbors[neighbor_chosen_key]
@@ -285,41 +395,52 @@ class Node:
     def get_menu_option(self) -> None:
         """Pega opcao do menu escolhida pelo usuario."""
         menu_options = [menu_option.value for menu_option in MenuOptions]
-        while True:
-            option = int(input(""))
+        option = input("")
 
-            if option not in menu_options:
-                print("Opção inválida")
-            else:
-                break
+        if not option.isdigit() or int(option) not in menu_options:
+            print("Opção inválida")
+            return
+
+        option = int(option)
 
         if option == MenuOptions.LISTAR_VIZINHOS.value:
             self.show_neighbors()
 
         elif option == MenuOptions.HELLO.value:
             peer = self.pick_neighbor()
-            if peer is not None:
-                self.send_hello(peer)
+            if not peer:
+                print("Vizinho inválido")
+                return
+            self.send_hello(peer)
 
         elif option == MenuOptions.SEARCH_FLOODING.value:
             key = input("Digite a chave a ser buscada\n")
+            if not Node.is_valid_key(key):
+                print("Chave inválida")
+                return
+
             if key in self.data:
                 print("Valor na tabela local")
                 print(f"    chave: {key} valor: {self.data[key]}")
             else:
-                self.send_search_flooding(key)
+                self.start_search_flooding(key)
 
         elif option == MenuOptions.ALTERAR_TTL.value:
-            novo_ttl = int(input("Digite novo valor de TTL\n"))
-            while novo_ttl < 1:
+            novo_ttl = input("Digite novo valor de TTL\n")
+            if not novo_ttl.isdigit() or int(novo_ttl) <= 0:
                 print("Valor de TTL inválido")
-                novo_ttl = int(input("Digite novo valor de TTL\n"))
+                return
 
             self.default_ttl = novo_ttl
 
         elif option == MenuOptions.SAIR.value:
             for peer in self.neighbors.values():
                 self.send_bye(peer)
+
+    @staticmethod
+    def is_valid_key(key: str) -> bool:
+        """Verifica se uma chave dada pelo usuário é válida"""
+        return " " not in key
 
     @staticmethod
     def show_menu() -> None:
