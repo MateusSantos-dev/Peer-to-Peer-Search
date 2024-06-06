@@ -41,7 +41,6 @@ class Node:
             key_values: Optional[dict[str, str]]
     ) -> None:
         """Inicializa um novo nó da rede P2P."""
-
         # Se os parametros não forem passados, inicializa com valores padrão
         if neighbors is None:
             neighbors = []
@@ -151,9 +150,6 @@ class Node:
             return
 
         parts = message.split(" ")
-        origin = parts[0]
-        sequence_number = parts[1]
-        ttl = parts[2]
         operacao = parts[3]
 
         print(f'Mensagem recebida: "{message}"')
@@ -190,7 +186,6 @@ class Node:
 
     def handle_message_flooding(self, message: str, sender_ip: str) -> None:
         """Lida com uma mensagem de busca por flooding."""
-
         parts = message.split(" ")
         origin = parts[0]
         ttl = parts[2]
@@ -328,8 +323,7 @@ class Node:
             hop_count = kwargs.get("hop_count")
             return f"{origin} {sequence_number} {ttl} {operacao} {mode} {key} {value} {hop_count}"
 
-        else:
-            raise ValueError(f"Operação inválida: {message_type}")
+        raise ValueError(f"Operação inválida: {message_type}")
 
     def connect_to_neighbors(self, neighbors: list[tuple[str, int]]):
         """Conecta-se aos vizinhos do nó."""
