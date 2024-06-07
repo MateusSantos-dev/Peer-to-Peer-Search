@@ -2,6 +2,7 @@ import sys
 import utils
 import socket
 import threading
+import random
 from typing import Optional
 from enum import Enum, auto
 
@@ -93,6 +94,55 @@ class Node:
             connection, _ = self.socket.accept()
             threading.Thread(target=self.receive_message, args=(connection,), daemon=True).start()
 
+    def connect_to_neighbors(self, neighbors: list[tuple[str, int]]):
+        """Conecta-se aos vizinhos do nó."""
+        all_neighbors = {}
+        for neighbor in neighbors:
+            ip, port = neighbor
+            print(f"Tentando adicionar vizinho {ip}:{port}")
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((ip, port))
+                self.send_hello(sock)
+                all_neighbors[neighbor] = sock
+                threading.Thread(target=self.receive_message, args=(sock,), daemon=True).start()
+            except ConnectionRefusedError:
+                print("    Erro ao conectar!")
+        return all_neighbors
+
+    def add_neighbor(self, ip: str, port: int) -> None:
+        """Adiciona um vizinho ao nó."""
+        if (ip, port) in self.neighbors:
+            print(f"Vizinho já está na tabela {ip}:{port}")
+            return
+
+        print(f"Tentando conectar com {ip}:{port}")
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((ip, port))
+            self.neighbors[(ip, port)] = sock
+            print(f"    Adicionando vizinho na tabela: {ip}:{port}")
+            threading.Thread(target=self.receive_message, args=(sock,), daemon=True).start()
+        except ConnectionRefusedError:
+            print("    Erro ao conectar!")
+
+    def delete_neighbor(self, ip: str, port: int) -> None:
+        """Deleta um vizinho do nó."""
+        if (ip, port) not in self.neighbors:
+            print(f"Vizinho não está na tabela {ip}:{port}")
+            return
+
+        # Fecha a conexão com o vizinho
+        self.neighbors[(ip, port)].close()
+        del self.neighbors[(ip, port)]
+        print(f"Removendo vizinho da tabela {ip}:{port}")
+
+        # Remove o vizinho da lista de mensagens vistas
+        if f"{ip}:{port}" in self.last_seen_messages:
+            del self.last_seen_messages[f"{ip}:{port}"]
+
+
     def mark_message_as_seen(self, message: str) -> None:
         """Marca uma mensagem como vista."""
         # Não marca mensagens de confirmação ou mensagens já vistas
@@ -166,6 +216,9 @@ class Node:
             if mode == "FL":
                 self.handle_message_flooding(message, sender_ip)
 
+            elif mode == "RW":
+                self.handle_message_random_walk(message, sender_ip)
+
         elif operacao == "VAL":
             self.handle_value(message)
 
@@ -188,6 +241,7 @@ class Node:
         """Lida com uma mensagem de busca por flooding."""
         parts = message.split(" ")
         origin = parts[0]
+        sequence_number = parts[1]
         ttl = parts[2]
         last_hop_port = parts[5]
         key = parts[6]
@@ -230,7 +284,7 @@ class Node:
         hop_count = int(hop_count) + 1
         message = self.craft_message(MessageType.SEARCH_FLOODING,
                                      origin=origin,
-                                     sequence_number=self.sequence_number,
+                                     sequence_number=sequence_number,
                                      ttl=ttl,
                                      last_hop_port=self.port,
                                      key=key,
@@ -239,7 +293,61 @@ class Node:
         # enviar para vizinhos exceto o transmissor da mensagem
         for (ip, port), neighbor in self.neighbors.items():
             if (ip, port) != (sender_ip, int(last_hop_port)):
-                self.send_message(neighbor, message)
+                Node.send_message(neighbor, message)
+
+    def handle_message_random_walk(self, message: str, sender_ip: str) -> None:
+        """Lida com uma mensagem de busca por random walk."""
+        parts = message.split(" ")
+        origin = parts[0]
+        sequence_number = parts[1]
+        ttl = parts[2]
+        last_hop_port = parts[5]
+        key = parts[6]
+        hop_count = parts[7]
+
+        if key in self.data:
+            print("Chave encontrada")
+            ip, port = utils.convert_str_to_ip_port(origin)
+            if (ip, port) in self.neighbors:
+                self.send_value(
+                    self.neighbors[(ip, port)],
+                    mode="RW",
+                    key=key,
+                    value=self.data[key],
+                    hop_count=hop_count)
+
+            else:
+                # Cria conexão temporária para enviar o valor
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((ip, port))
+                self.send_value(
+                    sock,
+                    mode="RW",
+                    key=key,
+                    value=self.data[key],
+                    hop_count=hop_count)
+                sock.close()
+            return
+
+        ttl = int(ttl) - 1
+        if ttl <= 0:
+            print("TTL igual a zero, descartando mensagem")
+            return
+
+        hop_count = int(hop_count) + 1
+        message = self.craft_message(MessageType.SEARCH_RANDOM_WALK,
+                                     origin=origin,
+                                     sequence_number=sequence_number,
+                                     ttl=ttl,
+                                     last_hop_port=self.port,
+                                     key=key,
+                                     hop_count=hop_count)
+
+        all_neighbors = list(self.neighbors.values())
+        # Mensagem só volta pelo mesmo caminho se não houver outros vizinhos
+        if len(all_neighbors) > 1:
+            all_neighbors.remove(self.neighbors[(sender_ip, int(last_hop_port))])
+        Node.send_message(random.choice(all_neighbors), message)
 
     def handle_value(self, message: str) -> None:
         """Lida com uma mensagem VALUE."""
@@ -253,32 +361,24 @@ class Node:
 
         print(f"Valor encontrado! Chave: {key} Valor: {value}")
 
-    def send_message(self, sock: socket.socket, message: str) -> None:
+    @staticmethod
+    def send_message(sock: socket.socket, message: str) -> None:
         """Envia uma mensagem para um nó e."""
         ip, port = sock.getpeername()
         print(f'Encaminhando mensagem: "{message}" para {ip}:{port}')
         sock.sendall(message.encode())
-        self.sequence_number += 1
 
     def send_hello(self, peer: socket.socket) -> None:
         """Envia uma mensagem HELLO para um vizinho."""
         message = self.craft_message(MessageType.HELLO)
-        self.send_message(peer, message)
+        Node.send_message(peer, message)
+        self.sequence_number += 1
 
     def send_bye(self, peer: socket.socket) -> None:
         """Envia uma mensagem BYE para um vizinho."""
         message = self.craft_message(MessageType.BYE)
-        self.send_message(peer, message)
-
-    def start_search_flooding(self, key: str) -> None:
-        """Inicia uma busca por flooding."""
-        message = self.craft_message(
-            MessageType.SEARCH_FLOODING,
-            last_hop_port=self.port,
-            key=key, hop_count=1)
-
-        for neighbor in self.neighbors.values():
-            self.send_message(neighbor, message)
+        Node.send_message(peer, message)
+        self.sequence_number += 1
 
     def send_value(self, peer: socket.socket, **kwargs) -> None:
         """Envia um valor para um nó."""
@@ -288,7 +388,31 @@ class Node:
         hop_count = kwargs.get("hop_count")
 
         message = self.craft_message(MessageType.VALUE, mode=mode, key=key, value=value, hop_count=hop_count)
-        self.send_message(peer, message)
+        Node.send_message(peer, message)
+        self.sequence_number += 1
+
+    def start_search_flooding(self, key: str) -> None:
+        """Inicia uma busca por flooding."""
+        message = self.craft_message(
+            MessageType.SEARCH_FLOODING,
+            last_hop_port=self.port,
+            key=key,
+            hop_count=1)
+
+        for neighbor in self.neighbors.values():
+            Node.send_message(neighbor, message)
+        self.sequence_number += 1
+
+    def start_random_walk(self, key: str) -> None:
+        """Inicia uma busca por random walk."""
+        message = self.craft_message(
+            MessageType.SEARCH_RANDOM_WALK,
+            last_hop_port=self.port,
+            key=key,
+            hop_count=1)
+        neighbor = random.choice(list(self.neighbors.values()))
+        Node.send_message(neighbor, message)
+        self.sequence_number += 1
 
     def craft_message(self, message_type: MessageType, **kwargs):
         """Cria uma mensagem para ser enviada."""
@@ -315,6 +439,14 @@ class Node:
             hop_count = kwargs.get("hop_count")
             return f"{origin} {sequence_number} {ttl} {operacao} {mode} {last_hop_port} {key} {hop_count}"
 
+        if message_type == MessageType.SEARCH_RANDOM_WALK:
+            operacao = "SEARCH"
+            mode = "RW"
+            last_hop_port = kwargs.get("last_hop_port")
+            key = kwargs.get("key")
+            hop_count = kwargs.get("hop_count")
+            return f"{origin} {sequence_number} {ttl} {operacao} {mode} {last_hop_port} {key} {hop_count}"
+
         if message_type == MessageType.VALUE:
             operacao = "VAL"
             mode = kwargs.get("mode")
@@ -324,54 +456,6 @@ class Node:
             return f"{origin} {sequence_number} {ttl} {operacao} {mode} {key} {value} {hop_count}"
 
         raise ValueError(f"Operação inválida: {message_type}")
-
-    def connect_to_neighbors(self, neighbors: list[tuple[str, int]]):
-        """Conecta-se aos vizinhos do nó."""
-        all_neighbors = {}
-        for neighbor in neighbors:
-            ip, port = neighbor
-            print(f"Tentando adicionar vizinho {ip}:{port}")
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.connect((ip, port))
-                self.send_hello(sock)
-                all_neighbors[neighbor] = sock
-                threading.Thread(target=self.receive_message, args=(sock,), daemon=True).start()
-            except ConnectionRefusedError:
-                print("    Erro ao conectar!")
-        return all_neighbors
-
-    def add_neighbor(self, ip: str, port: int) -> None:
-        """Adiciona um vizinho ao nó."""
-        if (ip, port) in self.neighbors:
-            print(f"Vizinho já está na tabela {ip}:{port}")
-            return
-
-        print(f"Tentando conectar com {ip}:{port}")
-
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.connect((ip, port))
-            self.neighbors[(ip, port)] = sock
-            print(f"    Adicionando vizinho na tabela: {ip}:{port}")
-            threading.Thread(target=self.receive_message, args=(sock,), daemon=True).start()
-        except ConnectionRefusedError:
-            print("    Erro ao conectar!")
-
-    def delete_neighbor(self, ip: str, port: int) -> None:
-        """Deleta um vizinho do nó."""
-        if (ip, port) not in self.neighbors:
-            print(f"Vizinho não está na tabela {ip}:{port}")
-            return
-
-        # Fecha a conexão com o vizinho
-        self.neighbors[(ip, port)].close()
-        del self.neighbors[(ip, port)]
-        print(f"Removendo vizinho da tabela {ip}:{port}")
-
-        # Remove o vizinho da lista de mensagens vistas
-        if f"{ip}:{port}" in self.last_seen_messages:
-            del self.last_seen_messages[f"{ip}:{port}"]
 
     def pick_neighbor(self):
         """Retorna o vizinho escolhido pelo usuário"""
@@ -418,6 +502,18 @@ class Node:
                 print(f"    chave: {key} valor: {self.data[key]}")
             else:
                 self.start_search_flooding(key)
+
+        elif option == MenuOptions.SEARCH_RANDOM_WALK.value:
+            key = input("Digite a chave a ser buscada\n")
+            if not Node.is_valid_key(key):
+                print("Chave inválida")
+                return
+
+            if key in self.data:
+                print("Valor na tabela local")
+                print(f"    chave: {key} valor: {self.data[key]}")
+            else:
+                self.start_random_walk(key)
 
         elif option == MenuOptions.ALTERAR_TTL.value:
             novo_ttl = input("Digite novo valor de TTL\n")
