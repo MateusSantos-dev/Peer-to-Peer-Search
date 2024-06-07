@@ -142,7 +142,6 @@ class Node:
         if f"{ip}:{port}" in self.last_seen_messages:
             del self.last_seen_messages[f"{ip}:{port}"]
 
-
     def mark_message_as_seen(self, message: str) -> None:
         """Marca uma mensagem como vista."""
         # Não marca mensagens de confirmação ou mensagens já vistas
@@ -414,50 +413,97 @@ class Node:
         Node.send_message(neighbor, message)
         self.sequence_number += 1
 
-    def craft_message(self, message_type: MessageType, **kwargs):
+    def craft_message(self, message_type: MessageType, **kwargs) -> str:
         """Cria uma mensagem para ser enviada."""
-        # Caso esteja reenviando mensagem, pega o endereço de origem e o número de sequência da mensagem
         origin = kwargs.get("origin", f"{self.ip}:{self.port}")
         sequence_number = kwargs.get("sequence_number", self.sequence_number)
-        operacao = MessageType(message_type).name  # Converte o valor do Enum para o nome da operação
-
+        key = kwargs.get("key")
+        hop_count = kwargs.get("hop_count")
         ttl = kwargs.get("ttl", self.default_ttl)
 
         if message_type == MessageType.HELLO:
-            ttl = 1
-            return f"{origin} {sequence_number} {ttl} {operacao}"
+            return self.craft_message_hello()
 
         if message_type == MessageType.BYE:
-            ttl = 1
-            return f"{origin} {sequence_number} {ttl} {operacao}"
+            return self.craft_message_bye()
 
         if message_type == MessageType.SEARCH_FLOODING:
-            operacao = "SEARCH"
-            mode = "FL"
-            last_hop_port = kwargs.get("last_hop_port")
-            key = kwargs.get("key")
-            hop_count = kwargs.get("hop_count")
-            return f"{origin} {sequence_number} {ttl} {operacao} {mode} {last_hop_port} {key} {hop_count}"
+            return self.craft_message_search_flooding(
+                origin=origin,
+                sequence_number=sequence_number,
+                ttl=ttl,
+                key=key,
+                hop_count=hop_count
+            )
 
         if message_type == MessageType.SEARCH_RANDOM_WALK:
-            operacao = "SEARCH"
-            mode = "RW"
-            last_hop_port = kwargs.get("last_hop_port")
-            key = kwargs.get("key")
-            hop_count = kwargs.get("hop_count")
-            return f"{origin} {sequence_number} {ttl} {operacao} {mode} {last_hop_port} {key} {hop_count}"
+            return self.craft_message_search_random_walk(
+                origin=origin,
+                sequence_number=sequence_number,
+                ttl=ttl,
+                key=key,
+                hop_count=hop_count
+            )
 
         if message_type == MessageType.VALUE:
-            operacao = "VAL"
-            mode = kwargs.get("mode")
-            key = kwargs.get("key")
-            value = kwargs.get("value")
-            hop_count = kwargs.get("hop_count")
-            return f"{origin} {sequence_number} {ttl} {operacao} {mode} {key} {value} {hop_count}"
+            return self.craft_message_value(
+                mode=kwargs.get("mode"),
+                key=key,
+                value=kwargs.get("value"),
+                hop_count=hop_count
+            )
 
+        # Só entra aqui se esquecer de implementar alguma opção
         raise ValueError(f"Operação inválida: {message_type}")
 
-    def pick_neighbor(self):
+    def craft_message_hello(self) -> str:
+        """Cria uma mensagem HELLO.
+        Formato da mensagem <ORIGIN> <SEQNO> <TTL> <OPERACAO>"""
+        return f"{self.ip}:{self.port} {self.sequence_number} {1} HELLO"
+
+    def craft_message_bye(self) -> str:
+        """Cria uma mensagem BYE.
+        Formato da mensagem <ORIGIN> <SEQNO> <TTL> <OPERACAO>"""
+        return f"{self.ip}:{self.port} {self.sequence_number} {1} BYE"
+
+    def craft_message_search_flooding(
+            self,
+            origin: str,
+            sequence_number: int,
+            ttl: int,
+            key: str,
+            hop_count: int
+    ) -> str:
+        """Cria uma mensagem de busca por flooding.
+        Formato da mensagem <ORIGIN> <SEQNO> <TTL> SEARCH <MODE> <LAST_HOP_PORT> <KEY> <HOP_COUNT>"""
+        # OBS: Informações são passadas por parâmetro para facilitar a criação de mensagens de reenvio
+        return f"{origin} {sequence_number} {ttl} SEARCH FL {self.port} {key} {hop_count}"
+
+    def craft_message_search_random_walk(
+            self,
+            origin: str,
+            sequence_number: int,
+            ttl: int,
+            key: str,
+            hop_count: int
+    ) -> str:
+        """Cria uma mensagem de busca por random walk.
+        Formato da mensagem <ORIGIN> <SEQNO> <TTL> SEARCH <MODE> <LAST_HOP_PORT> <KEY> <HOP_COUNT>"""
+        # OBS: Informações são passadas por parâmetro para facilitar a criação de mensagens de reenvio
+        return f"{origin} {sequence_number} {ttl} SEARCH RW {self.port} {key} {hop_count}"
+
+    def craft_message_value(
+            self,
+            mode: str,
+            key: str,
+            value: str,
+            hop_count: int
+    ) -> str:
+        """Cria uma mensagem VALUE.
+        Formato da mensagem <ORIGIN> <SEQNO> <TTL> VAL <MODE> <KEY> <VALUE> <HOP_COUNT>"""
+        return f"{self.ip}:{self.port} {self.sequence_number} {self.default_ttl} VAL {mode} {key} {value} {hop_count}"
+
+    def pick_neighbor(self) -> socket.socket | None:
         """Retorna o vizinho escolhido pelo usuário"""
         self.show_neighbors()
 
@@ -470,12 +516,10 @@ class Node:
         neighbor_chosen_key = list(self.neighbors.keys())[neighbor_idx]
         return self.neighbors[neighbor_chosen_key]
 
-    def get_menu_option(self) -> None:
-        """Pega opcao do menu escolhida pelo usuario."""
-        menu_options = [menu_option.value for menu_option in MenuOptions]
-        option = input("")
-
-        if not option.isdigit() or int(option) not in menu_options:
+    def handle_menu_action(self) -> None:
+        """Lida com a opção escolhida pelo usuário no menu."""
+        option = Node.get_user_menu_option()
+        if option is None:
             print("Opção inválida")
             return
 
@@ -483,49 +527,91 @@ class Node:
 
         if option == MenuOptions.LISTAR_VIZINHOS.value:
             self.show_neighbors()
-
         elif option == MenuOptions.HELLO.value:
-            peer = self.pick_neighbor()
-            if not peer:
-                print("Vizinho inválido")
-                return
-            self.send_hello(peer)
-
+            self.handle_menu_hello()
         elif option == MenuOptions.SEARCH_FLOODING.value:
-            key = input("Digite a chave a ser buscada\n")
-            if not Node.is_valid_key(key):
-                print("Chave inválida")
-                return
-
-            if key in self.data:
-                print("Valor na tabela local")
-                print(f"    chave: {key} valor: {self.data[key]}")
-            else:
-                self.start_search_flooding(key)
-
+            self.handle_menu_search_flooding()
         elif option == MenuOptions.SEARCH_RANDOM_WALK.value:
-            key = input("Digite a chave a ser buscada\n")
-            if not Node.is_valid_key(key):
-                print("Chave inválida")
-                return
-
-            if key in self.data:
-                print("Valor na tabela local")
-                print(f"    chave: {key} valor: {self.data[key]}")
-            else:
-                self.start_random_walk(key)
-
+            self.handle_menu_search_random_walk()
+        elif option == MenuOptions.SEARCH_DEPTH_FIRST:
+            self.handle_menu_search_depth_first()
+        elif option == MenuOptions.ESTATISTICAS.value:
+            self.handle_menu_statistics()
         elif option == MenuOptions.ALTERAR_TTL.value:
-            novo_ttl = input("Digite novo valor de TTL\n")
-            if not novo_ttl.isdigit() or int(novo_ttl) <= 0:
-                print("Valor de TTL inválido")
-                return
-
-            self.default_ttl = novo_ttl
-
+            self.handle_menu_alterar_ttl()
         elif option == MenuOptions.SAIR.value:
-            for peer in self.neighbors.values():
-                self.send_bye(peer)
+            self.handle_menu_quit()
+
+        # Só entra aqui se esquecer de implementar alguma opção
+        raise ValueError(f"Opção inválida: {option}")
+
+    @staticmethod
+    def get_user_menu_option() -> int | None:
+        """Pega a opção do menu escolhida pelo usuário.
+        Retorna None se a opção não for válida."""
+        menu_options = [menu_option.value for menu_option in MenuOptions]
+        option = input("")
+
+        if not option.isdigit() or int(option) not in menu_options:
+            return None
+
+        return int(option)
+
+    def handle_menu_hello(self) -> None:
+        """Lida com a opção do menu de enviar uma mensagem HELLO."""
+        peer = self.pick_neighbor()
+        if peer is None:
+            print("Vizinho inválido")
+            return
+        self.send_hello(peer)
+
+    def handle_menu_search_flooding(self) -> None:
+        """Lida com a opção do menu de iniciar uma busca por flooding."""
+        key = input("Digite a chave a ser buscada\n")
+        if not Node.is_valid_key(key):
+            print("Chave inválida")
+            return
+
+        if key in self.data:
+            print("Valor na tabela local")
+            print(f"    chave: {key} valor: {self.data[key]}")
+        else:
+            self.start_search_flooding(key)
+
+    def handle_menu_search_random_walk(self) -> None:
+        """Lida com a opção do menu de iniciar uma busca por random walk."""
+        key = input("Digite a chave a ser buscada\n")
+        if not Node.is_valid_key(key):
+            print("Chave inválida")
+            return
+
+        if key in self.data:
+            print("Valor na tabela local")
+            print(f"    chave: {key} valor: {self.data[key]}")
+        else:
+            self.start_random_walk(key)
+
+    def handle_menu_search_depth_first(self):
+        """Lida com a opção do menu de iniciar uma busca em profundidade."""
+        pass
+
+    def handle_menu_statistics(self):
+        """Lida com a opção do menu de mostrar estatísticas."""
+        pass
+
+    def handle_menu_alterar_ttl(self) -> None:
+        """Lida com a opção do menu de alterar o valor padrão de TTL."""
+        novo_ttl = input("Digite novo valor de TTL\n")
+        if not novo_ttl.isdigit() or int(novo_ttl) <= 0:
+            print("Valor de TTL inválido")
+            return
+
+        self.default_ttl = novo_ttl
+
+    def handle_menu_quit(self):
+        """Lida com a opção do menu de sair."""
+        for peer in self.neighbors.values():
+            self.send_bye(peer)
 
     @staticmethod
     def is_valid_key(key: str) -> bool:
@@ -576,4 +662,4 @@ if __name__ == '__main__':
     thread.start()
     node.show_menu()
     while True:
-        node.get_menu_option()
+        node.handle_menu_action()
