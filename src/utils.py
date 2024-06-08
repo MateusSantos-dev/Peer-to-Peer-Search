@@ -1,3 +1,6 @@
+import statistics
+
+
 def is_valid_ip(ip: str) -> bool:
     """Verifica se um IP é válido."""
     parts = ip.split(".")
@@ -51,3 +54,19 @@ def get_all_neighbors_from_file(file_path: str) -> list[tuple[str, int]]:
 
         neighbors.append((ip, port))
     return neighbors
+
+
+def calculate_mean(data: list):
+    """
+    Calcula a média
+    Se data é vazio, retorna -1
+    """
+    return -1 if len(data) == 0 else statistics.mean(data)
+
+
+def calculate_standard_deviation(data: list):
+    """
+    Calcula o desvio padrão
+    Se len(data) < 2, retorna -1.00
+    """
+    return -1.00 if len(data) < 2 else statistics.stdev(data)
