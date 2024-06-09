@@ -48,30 +48,32 @@ class Node:
         if key_values is None:
             key_values = {}
 
+        print(f"Servidor criado: {ip}:{port}\n")
         self.ip = ip
         self.port = port
         self.sequence_number = 1  # numero de sequência da mensagem
         self.socket = Node.create_socket(ip, port)
-
-        print(f"Servidor criado: {ip}:{port}\n")
-
-        # Dicionário de chave-valor
-        self.data = key_values
+        self.data = key_values  # Dicionário de chave-valor
+        self.default_ttl = 100
 
         for key, value in self.data.items():
             print(f"Adicionando ({key}, {value}) na tabela local")
         print()
 
-        self.default_ttl = 100
-        self.neighbors: dict[tuple[str, int], socket.socket] = self.connect_to_neighbors(neighbors)
+        # Salva mensagens que não não recebemos ACK, chave: ip:porta valor: mensagens
+        self.messages_not_confirmed: dict[str, list[str]] = {}
 
-        self.last_seen_messages: dict[str, int] = {}  # Salva o último número de sequência recebido de cada vizinho
+        # Salva o último número de sequência recebido de cada vizinho, chave: ip:porta valor: número de sequência
+        self.last_seen_messages: dict[str, int] = {}
+
+        # Salva os sockets dos vizinhos, chave: (ip, porta) valor: socket
+        self.neighbors: dict[tuple[str, int], socket.socket] = self.connect_to_neighbors(neighbors)
 
         # Salva valores para busca em profundidade
         self.info_busca_em_profundidade: dict[str, Any] = {
             "no_mae": None,  # ip porta
             "vizinho_ativo": None,  # socket
-            "vizinhos_candidatos": []
+            "vizinhos_candidatos": []  # sockets
         }
         # Armazena número de mensagens vistas e hop_count até encontrar chave
         self.num_messages_seen_flooding = 0
@@ -225,7 +227,8 @@ class Node:
                 if not data:
                     break
                 message = data.decode()
-                self.interpret_message(message, sender_ip=connection.getpeername()[0])
+                sender_ip, sender_port = connection.getpeername()
+                self.interpret_message(message, sender_ip=sender_ip, sender_port=sender_port)
                 if not Node.is_confirmation_message(message):
                     self.confirm_message(connection, message)
                     self.mark_message_as_seen(message)
@@ -236,10 +239,10 @@ class Node:
         finally:
             connection.close()
 
-    def interpret_message(self, message: str, sender_ip: str) -> None:
+    def interpret_message(self, message: str, sender_ip: str, sender_port: int) -> None:
         """Interpreta uma mensagem recebida."""
         if Node.is_confirmation_message(message):
-            print(f'    Mensagem de confirmação recebida: "{message}"')
+            self.handle_confirmation_message(sender_ip, sender_port)
             return
 
         parts = message.split(" ")
@@ -270,6 +273,10 @@ class Node:
 
         else:
             raise ValueError(f"Operação inválida: {operacao}")
+
+    def handle_confirmation_message(self, sender_ip: str, sender_port: int) -> None:
+        """Lida com uma mensagem de confirmação."""
+        print(f'    Envio feito com sucesso: "{self.messages_not_confirmed[f"{sender_ip}:{sender_port}"].pop(0)}"')
 
     def handle_message_hello(self, message: str) -> None:
         """Lida com uma mensagem HELLO."""
@@ -344,7 +351,7 @@ class Node:
         # enviar para vizinhos exceto o transmissor da mensagem
         for (ip, port), neighbor in self.neighbors.items():
             if (ip, port) != (sender_ip, int(last_hop_port)):
-                Node.send_message(neighbor, message)
+                self.send_message(neighbor, message)
 
     def handle_message_random_walk(self, message: str, sender_ip: str) -> None:
         """Lida com uma mensagem de busca por random walk."""
@@ -403,7 +410,7 @@ class Node:
         # Mensagem só volta pelo mesmo caminho se não houver outros vizinhos
         if len(all_neighbors) > 1:
             all_neighbors.remove(self.neighbors[(sender_ip, int(last_hop_port))])
-        Node.send_message(random.choice(all_neighbors), message)
+        self.send_message(random.choice(all_neighbors), message)
 
     def handle_message_depth_first(self, message: str, sender_ip: str) -> None:
         """Lida com uma mensagem de busca em profundidade."""
@@ -487,7 +494,7 @@ class Node:
             key=key,
             hop_count=hop_count
         )
-        Node.send_message(proximo_socket, message)
+        self.send_message(proximo_socket, message)
 
     def handle_value(self, message: str) -> None:
         """Lida com uma mensagem VALUE."""
@@ -510,23 +517,28 @@ class Node:
         if mode == "BP":
             self.hop_count_depth_first.append(int(hop_count))
 
-    @staticmethod
-    def send_message(sock: socket.socket, message: str) -> None:
+    def send_message(self, sock: socket.socket, message: str) -> None:
         """Envia uma mensagem para um nó e."""
         ip, port = sock.getpeername()
-        print(f'Encaminhando mensagem: "{message}" para {ip}:{port}')
+        destino = f"{ip}:{port}"
+        print(f'Encaminhando mensagem: "{message}" para {destino}')
+
+        if self.messages_not_confirmed.get(destino) is None:
+            self.messages_not_confirmed[destino] = []
+        self.messages_not_confirmed[destino].append(message)
+
         sock.sendall(message.encode())
 
     def send_hello(self, peer: socket.socket) -> None:
         """Envia uma mensagem HELLO para um vizinho."""
         message = self.craft_message(MessageType.HELLO)
-        Node.send_message(peer, message)
+        self.send_message(peer, message)
         self.sequence_number += 1
 
     def send_bye(self, peer: socket.socket) -> None:
         """Envia uma mensagem BYE para um vizinho."""
         message = self.craft_message(MessageType.BYE)
-        Node.send_message(peer, message)
+        self.send_message(peer, message)
         self.sequence_number += 1
 
     def send_value(self, peer: socket.socket, **kwargs) -> None:
@@ -542,7 +554,7 @@ class Node:
             key=key,
             value=value,
             hop_count=hop_count)
-        Node.send_message(peer, message)
+        self.send_message(peer, message)
         self.sequence_number += 1
 
     def start_search_flooding(self, key: str) -> None:
@@ -553,7 +565,7 @@ class Node:
             hop_count=1)
 
         for neighbor in self.neighbors.values():
-            Node.send_message(neighbor, message)
+            self.send_message(neighbor, message)
         self.sequence_number += 1
 
     def start_search_random_walk(self, key: str) -> None:
@@ -563,7 +575,7 @@ class Node:
             key=key,
             hop_count=1)
         neighbor = random.choice(list(self.neighbors.values()))
-        Node.send_message(neighbor, message)
+        self.send_message(neighbor, message)
         self.sequence_number += 1
 
     def start_search_depth_first(self, key: str) -> None:
@@ -582,7 +594,7 @@ class Node:
             key=key,
             hop_count=1)
 
-        Node.send_message(self.info_busca_em_profundidade["vizinho_ativo"], message)
+        self.send_message(self.info_busca_em_profundidade["vizinho_ativo"], message)
         self.sequence_number += 1
 
     def craft_message(self, message_type: MessageType, **kwargs) -> str:
