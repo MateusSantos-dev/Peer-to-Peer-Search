@@ -307,6 +307,8 @@ class Node:
             print("Flooding: Mensagem repetida")
             return
 
+        self.mark_message_as_seen(message)
+
         if key in self.data:
             print("Chave encontrada")
             ip, port = utils.convert_str_to_ip_port(origin)
@@ -783,7 +785,8 @@ class Node:
 
     def handle_menu_search_flooding(self) -> None:
         """Lida com a opção do menu de iniciar uma busca por flooding."""
-        key = input("Digite a chave a ser buscada\n")
+        print("Digite a chave a ser buscada")
+        key = input("")
         if not Node.is_valid_key(key):
             print("Chave inválida")
             return
@@ -796,7 +799,8 @@ class Node:
 
     def handle_menu_search_random_walk(self) -> None:
         """Lida com a opção do menu de iniciar uma busca por random walk."""
-        key = input("Digite a chave a ser buscada\n")
+        print("Digite a chave a ser buscada")
+        key = input("")
         if not Node.is_valid_key(key):
             print("Chave inválida")
             return
@@ -809,7 +813,8 @@ class Node:
 
     def handle_menu_search_depth_first(self) -> None:
         """Lida com a opção do menu de iniciar uma busca em profundidade."""
-        key = input("Digite a chave a ser buscada\n")
+        print("Digite a chave a ser buscada")
+        key = input("")
         if not Node.is_valid_key(key):
             print("Chave inválida")
             return
@@ -822,7 +827,8 @@ class Node:
 
     def handle_menu_alterar_ttl(self) -> None:
         """Lida com a opção do menu de alterar o valor padrão de TTL."""
-        novo_ttl = input("Digite novo valor de TTL\n")
+        print("Digite novo valor de TTL")
+        novo_ttl = input("")
         if not novo_ttl.isdigit() or int(novo_ttl) <= 0:
             print("Valor de TTL inválido")
             return
