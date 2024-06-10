@@ -14,7 +14,7 @@ Este projeto foi desenvolvido por Mateus Santos e Wellisson Santana, estudantes 
 
 Para executar o código, siga as instruções abaixo:
 ```bash
-python node.py <endereco>:<porta> [vizinhos.txt [lista_chave_valor.txt]]
+python src/node.py <endereco>:<porta> [vizinhos.txt [lista_chave_valor.txt]]
 ```
 
 
